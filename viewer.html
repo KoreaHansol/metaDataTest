@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="ko">
+    <head>
+        <meta charset="UTF-8" />
+        <title>PDF 메타데이터 오버레이 뷰어</title>
+        <style>
+            .page-container {
+                position: relative;
+                margin-bottom: 40px;
+                display: inline-block;
+                border: 1px solid #ccc;
+            }
+            .page-image {
+                display: block;
+                max-width: none;
+            }
+            .highlight {
+                position: absolute;
+                border: 2px dashed red;
+                background-color: transparent;
+                transition: background-color 0.2s;
+            }
+            .highlight:hover {
+                background-color: rgba(255, 255, 0, 0.3);
+            }
+        </style>
+    </head>
+    <body>
+        <h2>PDF 이미지 + 메타데이터 하이라이트</h2>
+        <div id="pages"></div>
+
+        <script>
+            const SCALE = 1;
+
+            fetch("output.xml")
+                .then(res => res.text())
+                .then(xmlText => {
+                    const parser = new DOMParser();
+                    const xmlDoc = parser.parseFromString(xmlText, "application/xml");
+                    const pages = xmlDoc.querySelectorAll("page");
+                    const container = document.getElementById("pages");
+
+                    pages.forEach(page => {
+                        const pageNum = page.getAttribute("number");
+                        console.log("pageNum", pageNum);
+                        const pageHeight = parseFloat(page.getAttribute("height")) * SCALE;
+
+                        const pageDiv = document.createElement("div");
+                        pageDiv.className = "page-container";
+
+                        const img = document.createElement("img");
+                        img.src = `page${pageNum}.png`;
+                        img.className = "page-image";
+
+                        img.onload = () => {
+                            pageDiv.style.width = img.naturalWidth + "px";
+                            pageDiv.style.height = img.naturalHeight + "px";
+                            const texts = page.querySelectorAll("text");
+                            texts.forEach(text => {
+                                const value = text.getAttribute("value");
+                                const x = parseFloat(text.getAttribute("x")) * SCALE;
+                                const y = parseFloat(text.getAttribute("y")) * SCALE;
+                                const width = parseFloat(text.getAttribute("width")) * SCALE;
+                                const height = parseFloat(text.getAttribute("height")) * SCALE;
+
+                                const top = pageHeight - y - height;
+                                const finalY = y - 800;
+                                console.log("pageDiv.style.height", pageDiv.style.height);
+                                const box = document.createElement("div");
+                                box.className = "highlight";
+                                box.style.left = `${x}px`;
+                                box.style.top = `${finalY}px`;
+                                box.style.width = `${width}px`;
+                                box.style.height = `${height}px`;
+                                box.title = value;
+
+                                const isTableLike = /\t/.test(value) || / {2,}/.test(value) || value.includes("\n");
+                                box.addEventListener("mouseenter", () => {
+                                    const label = isTableLike ? "[테이블 추정]" : "[텍스트]";
+                                    console.log(`${label} [page ${pageNum}]: "${value}" 위치: x=${x}, y=${y}, w=${width}, h=${height}`);
+                                });
+
+                                pageDiv.appendChild(box);
+                            });
+                        };
+
+                        pageDiv.appendChild(img);
+                        container.appendChild(pageDiv);
+                    });
+                });
+        </script>
+    </body>
+</html>
