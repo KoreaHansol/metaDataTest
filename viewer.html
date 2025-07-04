@@ -2,105 +2,177 @@
 <html lang="ko">
   <head>
     <meta charset="UTF-8" />
-    <title>PDF 메타데이터 오버레이 뷰어</title>
+    <title>PDF 텍스트 메타데이터 추출</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
     <style>
+      body {
+        font-family: sans-serif;
+        padding: 20px;
+      }
       .page-container {
         position: relative;
-        margin-bottom: 40px;
-        display: inline-block;
-        border: 1px solid #ccc;
-      }
-      .page-image {
-        display: block;
-        max-width: none;
+        margin-bottom: 30px;
       }
       .highlight {
         position: absolute;
         border: 2px dashed red;
         background-color: transparent;
-        transition: background-color 0.2s;
+        pointer-events: auto;
+        cursor: pointer;
       }
       .highlight:hover {
         background-color: rgba(255, 255, 0, 0.3);
       }
+      canvas {
+        display: block;
+        border: 1px solid #ccc;
+      }
+      #selectedText {
+        position: fixed;
+        bottom: 20px;
+        right: 20px;
+        background: #fff8dc;
+        border: 1px solid #ccc;
+        padding: 10px;
+        font-size: 14px;
+        border-radius: 6px;
+        max-width: 300px;
+        word-break: break-word;
+      }
     </style>
   </head>
   <body>
-    <h2>메타데이터</h2>
-    <div id="pages"></div>
+    <h2>PDF 업로드 및 XML 추출</h2>
+    <input type="file" id="pdfUpload" accept="application/pdf" />
+    <button id="downloadXmlBtn" disabled>XML 다운로드</button>
+    <div id="pdfContainer"></div>
+    <div id="selectedText">텍스트를 클릭하면 여기에 표시됩니다</div>
 
     <script>
-      const SCALE = 1;
+      const input = document.getElementById("pdfUpload");
+      const container = document.getElementById("pdfContainer");
+      const selectedTextDiv = document.getElementById("selectedText");
+      const downloadBtn = document.getElementById("downloadXmlBtn");
 
-      fetch("output.xml")
-        .then((res) => res.text())
-        .then((xmlText) => {
-          const parser = new DOMParser();
-          const xmlDoc = parser.parseFromString(xmlText, "application/xml");
-          const pages = xmlDoc.querySelectorAll("page");
-          const container = document.getElementById("pages");
+      let extractedXml = "";
 
-          pages.forEach((page) => {
-            const pageNum = page.getAttribute("number");
-            const pageHeight = parseFloat(page.getAttribute("height")) * SCALE;
+      input.addEventListener("change", async (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
 
-            const pageDiv = document.createElement("div");
-            pageDiv.className = "page-container";
+        const arrayBuffer = await file.arrayBuffer();
+        const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
 
-            const img = document.createElement("img");
-            img.src = `page${pageNum}.png`;
-            img.className = "page-image";
+        container.innerHTML = "";
+        const scale = 1.5;
+        const allPagesXml = [];
 
-            const ptToPx = (pt) => pt * (96 / 72);
+        for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
+          const page = await pdf.getPage(pageNum);
+          const viewport = page.getViewport({ scale });
 
-            img.onload = () => {
-              const pageWidthPt = parseFloat(page.getAttribute("width"));
-              const pageHeightPt = parseFloat(page.getAttribute("height"));
+          const canvas = document.createElement("canvas");
+          canvas.width = viewport.width;
+          canvas.height = viewport.height;
+          const context = canvas.getContext("2d");
 
-              const pageWidthPx = ptToPx(pageWidthPt);
-              const pageHeightPx = ptToPx(pageHeightPt);
+          await page.render({ canvasContext: context, viewport }).promise;
 
-              const imageWidth = img.naturalWidth;
-              const imageHeight = img.naturalHeight;
+          const pageDiv = document.createElement("div");
+          pageDiv.className = "page-container";
+          pageDiv.style.width = canvas.width + "px";
+          pageDiv.style.height = canvas.height + "px";
+          pageDiv.appendChild(canvas);
+          container.appendChild(pageDiv);
 
-              const scaleX = imageWidth / pageWidthPx;
-              const scaleY = imageHeight / pageHeightPx;
+          const textContent = await page.getTextContent();
+          const pageXml = [];
 
-              pageDiv.style.width = imageWidth + "px";
-              pageDiv.style.height = imageHeight + "px";
+          const lineMap = new Map();
 
-              const texts = page.querySelectorAll("text");
-              texts.forEach((text) => {
-                const value = text.getAttribute("value");
+          for (const item of textContent.items) {
+            const [a, b, c, d, x, y] = item.transform;
+            const scaledY = y * scale;
+            const fontHeight = Math.abs(d) * scale;
+            const key = scaledY.toFixed(2);
+            if (!lineMap.has(key)) lineMap.set(key, []);
+            lineMap.get(key).push({
+              str: item.str,
+              x: x * scale,
+              y: scaledY,
+              width: item.width * scale,
+              height: fontHeight,
+              fontName: item.fontName,
+            });
+          }
 
-                const xPt = parseFloat(text.getAttribute("x"));
-                const yPt = parseFloat(text.getAttribute("y"));
-                const widthPt = parseFloat(text.getAttribute("width"));
-                const heightPt = parseFloat(text.getAttribute("height"));
+          const sortedLines = [...lineMap.entries()].sort(
+            (a, b) => b[0] - a[0]
+          );
 
-                const x = ptToPx(xPt) * scaleX;
-                const y = ptToPx(yPt) * scaleY;
-                const width = ptToPx(widthPt) * scaleX;
-                const height = ptToPx(heightPt) * scaleY;
+          for (const [yKey, items] of sortedLines) {
+            items.sort((a, b) => a.x - b.x);
+            const mergedText = items.map((i) => i.str).join("");
+            const minX = Math.min(...items.map((i) => i.x));
+            const maxX = Math.max(...items.map((i) => i.x + i.width));
+            const avgHeight =
+              items.reduce((sum, i) => sum + i.height, 0) / items.length;
+            const top = canvas.height - parseFloat(yKey);
 
-                const top = imageHeight - y - height;
+            const escapedStr = mergedText
+              .replace(/&/g, "&amp;")
+              .replace(/</g, "&lt;")
+              .replace(/>/g, "&gt;")
+              .replace(/"/g, "&quot;")
+              .replace(/'/g, "&apos;");
 
-                const box = document.createElement("div");
-                box.className = "highlight";
-                box.style.left = `${x}px`;
-                box.style.top = `${top}px`;
-                box.style.width = `${width}px`;
-                box.style.height = `${height}px`;
-                box.title = value;
+            pageXml.push(
+              `<text value="${escapedStr}" x="${minX.toFixed(
+                2
+              )}" y="${parseFloat(yKey).toFixed(2)}" width="${(
+                maxX - minX
+              ).toFixed(2)}" height="${avgHeight.toFixed(2)}" font="${
+                items[0].fontName
+              }" />`
+            );
 
-                pageDiv.appendChild(box);
-              });
-            };
+            const highlight = document.createElement("div");
+            highlight.className = "highlight";
+            highlight.style.left = `${minX}px`;
+            highlight.style.top = `${top - avgHeight}px`;
+            highlight.style.width = `${maxX - minX}px`;
+            highlight.style.height = `${avgHeight}px`;
+            highlight.title = mergedText;
 
-            pageDiv.appendChild(img);
-            container.appendChild(pageDiv);
-          });
-        });
+            highlight.addEventListener("click", () => {
+              selectedTextDiv.textContent = `선택한 텍스트: ${mergedText}`;
+            });
+
+            pageDiv.appendChild(highlight);
+          }
+
+          allPagesXml.push(
+            `<page number="${pageNum}" width="${viewport.width}" height="${
+              viewport.height
+            }">\n  ${pageXml.join("\n  ")}\n</page>`
+          );
+        }
+
+        extractedXml = `<?xml version="1.0" encoding="UTF-8"?>\n<document>\n  ${allPagesXml.join(
+          "\n  "
+        )}\n</document>`;
+        downloadBtn.disabled = false;
+      });
+
+      downloadBtn.addEventListener("click", () => {
+        const blob = new Blob([extractedXml], { type: "application/xml" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = "extracted_text.xml";
+        a.click();
+        URL.revokeObjectURL(url);
+      });
     </script>
   </body>
 </html>
